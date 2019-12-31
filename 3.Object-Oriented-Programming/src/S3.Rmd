@@ -1,0 +1,331 @@
+---
+title: "S3"
+author: "荣志炜"
+date: "2019/12/29"
+output:
+  github_document:
+    html_preview: false
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = "markup", error = TRUE, collapse = TRUE)
+```
+
+## 1. 介绍
+
+S3是R中的第一个、最简单的OO系统，虽然非正式，但优雅、简单，并且是base R和stats packages中唯一使用的OO系统，也是CRAN软件包中最常使用的系统。
+
+S3提供了极大的自由度，这也导致了许多病态的写法。所以开发者需要自己进行约束。
+
+## 2. 基础
+
+**S3 object是带有class attr的base object。**比如下面的`factor`：
+```{r}
+f <- factor(c("a", "b", "c"))
+
+typeof(f)
+attributes(f)
+```
+
+`unclass`函数通过将`class`attr删除从而得到原来的base objects
+
+```{r}
+unclass(f)
+```
+
+**S3 object只在其送入泛型函数才显示出其不同的行为**。最简单的看一个函数是否是泛型函数的方法是`sloop::ftype()`：
+```{r}
+sloop::ftype(print)
+sloop::ftype(str)
+sloop::ftype(unclass)
+```
+
+> 我们看到，sloop中函数的命名规则：即ftype是看function的type，otype是看objects的type（这里只显示其所属的OOP系统）
+
+`print`作为泛型函数，在输出factor的时候，会隐藏其作为integer的本质，而只输出其levels：
+```{r}
+print(f)
+print(unclass(f))
+```
+
+`str`原本来用来打印所有的信息的，而其作为泛型函数，在面对一些特殊的类，比如`POSIXlt`时，其会故意隐藏一些信息来给出更加友好的显示：
+```{r}
+time <- strptime(c("2017-01-01", "2020-05-04 03:21"), "%Y-%m-%d")
+str(time)
+str(unclass(time))
+```
+
+**泛型函数只作为一个中间角色存在，其主要的作用是去找到真正需要运行的那个函数，然后运行那个函数，这称为method dispatch，而找到的那个函数称为method。**`sloop::s3_dispatch`函数包裹整个泛型函数执行的过程，可视化method dispatch：
+```{r}
+sloop::s3_dispatch(print(f))
+```
+
+我们可以看到S3 method的特殊命名形式：`generic.class()`。但也有些例外，比如有些函数其出现在S3系统之前，可能也是`xx.yy()`的形式，但其不是泛型函数，这可以通过以下的方式来进行检查：
+```{r}
+sloop::ftype(t.test)  # t.test虽然有.，但其实它是一个generic（泛型函数）而不是method
+sloop::ftype(t.data.frame)  # t.data.frame是方法，其对应的泛型函数是t()，即转置
+```
+
+有些时候，S3 methods的源代码不能看到。因为其被放置在package的内部而并不能在global environment中得到。如果想要得到，可以使用`sloop::s3_get_method()`函数：
+```{r}
+weighted.mean.Date
+sloop::s3_get_method(weighted.mean.Date)
+```
+
+
+### 2.1 练习
+
+1. 描述一下`t.test`和`t.data.frame`的不同？  
+答: `t.test`是一个generic，做t检验的；`t.data.frame`是一个S3 method，专门用于`data.frame`的转置，其generic是`t()`。
+```{r}
+df <- as.data.frame(matrix(rnorm(12), nrow = 4))
+df
+t(df)
+sloop::s3_dispatch(t(df))
+```
+
+
+2. 列出包含`.`的常用R函数，但他们不是S3 methods？
+答：这些函数有：`install.packages()`、`read.csv()`、`list.files()`、`download.file()`、`data.frame()`、`as.character()`、`Sys.Data()`、`all.equal()`、`do.call()`、`on.exit()`。近些年来蛇形命名法在R中也开始流行起来，但比较原始的一些函数的命名依然没有改变。在`tidyverse` 中有一些使用蛇形命名法命名的函数执行相同的功能，比如`readr::read_csv()`、`rlang::as_character()`等。
+
+3. `as.data.frame.data.frame`做的是什么？为什么这如此的confusing？怎样避免？
+答：`as.data.frame.data.frame`是针对`data.frame`的S3方法，用于将其转换为`data.frame`。但实际上这是没有必要的。多个`.`使得我们无法搞清楚哪些是`generic`、哪些是`method`部分。最好使用蛇形命名法来替代。
+```{r}
+sloop::s3_dispatch(as.data.frame(df))
+```
+
+
+4. 描述一下下面两段代码的不同之处？
+```{r}
+set.seed(1014)
+some_days <- as.Date("2017-01-31") + sample(10, 5)
+
+mean(some_days)
+mean(unclass(some_days))
+```
+答：`mean(some_days)`是对日期的平均，其实际上使用的是`mean.Date`方法。
+
+5. 以下函数返回的是什么类的对象？其base type是什么？其使用的属性是什么？
+```{r}
+x <- ecdf(rpois(100, 10))
+x
+
+sloop::s3_class(x)
+attributes(x)
+typeof(x)
+```
+答：实际上返回的对象是一个`ecdf`对象，其使用的base type是closure，其属性有class和call。
+
+6. 以下代码返回的是什么类型的objects？其base type是什么？其使用的属性是什么？
+```{r}
+x <- table(rpois(100, 5))
+x
+
+sloop::s3_class(x)
+typeof(x)
+attributes(x)
+```
+答：其class是table，其继承的base type是integer，其属性有`dim`、`dimnames`、`class`。
+
+
+## 3. Classes
+
+**令人惊讶的是，S3没有类的实现！我们实例化一个特定类的对象只需要加一个`class`属性即可。**这可以通过`structure`或`class<-`来实现。
+```{r}
+x <- structure(list(), class = 'my_class')
+
+x <- list()
+class(x) <- "my_class"
+```
+
+以下有3种方式来确定对象是否属于某一个类：
+```{r}
+class(x)
+inherits(x, "my_class")
+inherits(x, "your_class")
+```
+
+这太灵活了，为了避免这种灵活性带来的问题，Hadley建议对于自己的类，需要建立以下3个函数，来自我规范：
+
+- 一个低等级的**constructor**，`new_myclass()`，其可以创建一个新的对象；
+- 一个**validator**，`validate_myclass()`，使用更多的计算资源来检查保证这个对象是正确的；
+- 一个更加友好的**helper**，`myclass()`，创建对象的便捷方式；
+
+### 3.1 Constructors
+
+R中没有类似python中`class MyClass:`这样定义类的语句，所以仅仅通过赋予class属性并不能保证得到的对象拥有相似的结构。比如有些对象可能有`dims`属性，有些可能没有，所以**我们需要一个constructor函数，来规范得到的对象的结构**。注意，constructors的目的是来帮助开发者的，所以其可以尽量简单。
+
+constructors有以下3个原则：
+
+1. 名字是`new_myclass()`；
+2. 第一个参数是base object，另外为其每个属性提供一个参数；
+3. 检查base object和每个属性的type。
+
+constructors的要求；
+
+1. 需要看尽量简单；
+2. 主要目标人群是开发者；
+3. 在性能和易用性方面选择性能，尽量避免耗时的步骤的存在。
+
+我们现在为常用的S3类：`Date`来构建它的constructor：
+```{r}
+new_Date <- function(x = double()){
+  stopifnot(is.double(x))
+  structure(x, class = "Date")
+}
+
+new_Date(c(-1, 0, 1))
+```
+
+现在再来一个复杂的`difftime`，其也是一个表示时间段的类，但其拥有额外的属性`units`，所以我们可以这样进行：
+```{r}
+new_difftime <- function(x = double(), units = "sec") {
+  stopifnot(is.double(x))
+  units <- match.arg(units, c("secs", "mins", "hours", "days", "weeks"))
+  
+  structure(x, class = "difftime", units = units)
+}
+
+new_difftime(c(1, 10, 3600), "secs")
+new_difftime(52, "weeks")
+```
+
+### 3.2 Validators
+
+有时候我们需要避免出现一些“畸形”的对象，这时我们需要一个仔细的validators。当然我们也可以将这些检查的部分放在constructors中，但这并不方便。单独的Validators使得我们可以在其他需要检查的地方方便的复用。
+
+```{r}
+new_factor <- function(x = integer(), levels = character()) {
+  stopifnot(is.integer(x))
+  stopifnot(is.character(levels))
+  
+  structure(
+    x, levels = levels, class = "factor"
+  )
+}
+
+
+validate_factor <- function(x) {
+  values <- unclass(x)
+  levels <- attr(x, "levels")
+  
+  if (!all(!is.na(values) & values > 0)) {
+    stop(
+      "all `x` values must be non-missing and greater than zero",
+      call. = FALSE
+    )
+  }
+  
+  if (length(levels) < max(values)) {
+    stop(
+      "There must be at least as many `levels` as possible values in `x`",
+      call. = FALSE
+    )
+  }
+  
+  x
+}
+
+validate_factor(new_factor(1:5, "a"))
+validate_factor(new_factor(0:1, "a"))
+```
+
+最后我们一般让validator返回objects，便于组合函数。
+
+### 3.3 Helpers
+
+这是为users准备的，所以需要有以下：
+
+1. 其名字和类的名称一致，`myclass()`；
+2. 通过组合constructor和validator来完成；
+3. 创建精心设计的错误消息，用于返回给users；
+4. 有精心设计的默认值和有用的转换。
+
+现在具体解释一下最后一点：
+
+1. 比如`difftime`的创建需要`double`，但这个时候我们输入的是`integer`，所以会报错。但实际上在其中有隐形的转换机制会让函数更加robust，而且灵活；
+```{r}
+difftime <- function(x = double(), units = "secs") {
+  x <- as.double(x)
+  new_difftime(x, units)
+}
+
+difftime(1:10)
+```
+
+2. 有时候，我们接受的可能是在现实生活中更加便利的数据形式，比如对于`factor`，一般我们去处理一列characters的机会更大一些：
+```{r}
+factor <- function(x = character(), levels = unique(x)) {
+  ind <- match(x, levels)
+  validate_factor(new_factor(ind, levels))
+}
+
+factor(c("a", "a", "b"))
+```
+
+3. 一些复杂的objects可以通过指定许多简单的组成来指定，比如指定年、月、日来得到时间。
+
+### 3.4 练习
+
+1. 写一个`data.frame`的constructor？
+答：
+```{r}
+new_data_frame <- function(x = list(), names = character(), row.names = character()) {
+  stopifnot(is.list(x))
+  stopifnot(is.character(names))
+  stopifnot(is.character(row.names))
+  structure(
+    x,
+    class = "data.frame",
+    names = names,
+    row.names = row.names
+  )
+}
+new_data_frame(list(c(1, 2), c("a", "b")), c("num", "letter"), c("1", "2"))
+```
+
+2. 增强上面的`factor`helper，使其在在多个values没有在levels中出现时拥有更好的行为？
+答：。。。
+3. 小心的阅读`factor`的源码，看看有哪些我们没有实现？
+4. 简要描述一下`factor`中`contrasts`属性的用途？重写`new_factor`来包括这个属性？
+5. 阅读`utils::as.roman()`的文档，说一下构建这样的一个类需要怎样的constructor、validator和helpers？
+
+## 4. Generics and methods
+
+**S3泛型函数的工作就是去做method dispatch**。一般用到的函数就是`UseMethod()`，其接受两个参数，第一个是泛型函数的名称，第二个参数是用于method dispatch（一般用不到）。一般可以写成以下的形式：
+```{r}
+my_new_generic <- function(x) {
+  UseMethod("my_new_generic") # 不要在其中做任何的运算
+}
+```
+
+### 4.1 Method dispatch
+
+当一个对象输入到一个泛型函数的时候，工作的原理是：
+
+1. 首先创建一个向量，`paste0("generic", ".", c(class(x), "default"))`，然后去看所有潜在可能用到的函数，这个过程可以使用`sloop::s3_dispatch()`得以窥见；
+```{r}
+x <- Sys.Date()
+sloop::s3_dispatch(print(x))
+```
+其输出中，`=>`表示实际使用的方法，`*`表示被定义了，但没使用的方法。我们会发现都会有一个default，这并不是一个实际存在的类（pseudo-class），如果其他没有匹配成功的方法，则就会去使用这个方法。
+
+其思想看起来是简单的，但当我们面临着继承、base type、internal generic、group generic等问题时，其行为会变得非常复杂，比如下面的例子：
+```{r}
+x <- matrix(1:10, nrow = 2)
+sloop::s3_dispatch(mean(x))
+sloop::s3_dispatch(sum(Sys.time()))
+```
+
+### 4.2 Finding methods
+
+`sloop::s3_dispatch`只能找到进行这次函数运算的时候相关的方法，如果我们希望找到某个泛型函数对应的所有方法、或者是某个类对应的所有泛型函数的时候，可以使用下面的两个函数：
+```{r}
+sloop::s3_methods_generic("mean")
+sloop::s3_methods_class("ordered")
+```
+
+### 4.3 Creating methods
+
